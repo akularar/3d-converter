@@ -101,14 +101,43 @@ def classify_stage(line: str) -> Optional[str]:
     return None
 
 
+async def normalize_with_gltfpack(input_glb: Path) -> Optional[Path]:
+    """Run the GLB through gltfpack to strip EXT_meshopt_compression (and any
+    other encodings Blender's glTF importer lacks support for). Returns the
+    normalized path on success, or None if gltfpack isn't available or the
+    pass fails (caller falls through to the raw input)."""
+    gltfpack = shutil.which("gltfpack")
+    if not gltfpack:
+        return None
+    out = input_glb.with_name("input.normalized.glb")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            gltfpack, "-i", str(input_glb), "-o", str(out),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, _ = await proc.communicate()
+        if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            return out
+    except Exception:
+        pass
+    return None
+
+
 async def run_convert(job: Job, input_glb: Path) -> None:
     """Spawn convert.py and update the job record as output streams in."""
     job.status = "running"
+    job.stage = "import"
+    job.message = "Normalizing GLB..."
+
+    source = await normalize_with_gltfpack(input_glb) or input_glb
+
     cmd = [
         sys.executable,
         str(CONVERT_PY),
-        str(input_glb),
+        str(source),
         "-o", str(job.workdir),
+        "--stem", input_glb.stem,
         "--formats", "usdz",
     ]
     if BLENDER_PATH:
